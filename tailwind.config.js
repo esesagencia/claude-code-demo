@@ -67,6 +67,17 @@ module.exports = {
   				'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
   				border: 'hsl(var(--sidebar-border))',
   				ring: 'hsl(var(--sidebar-ring))'
+  			},
+  			sur: {
+  				black: '#101820',
+  				blue: '#1e3fff',
+  				grey: {
+  					'1': '#F5F5F5',
+  					'2': '#E0E0E0',
+  					'3': '#9E9E9E',
+  					'4': '#616161',
+  					'5': '#424242'
+  				}
   			}
   		}
   	}

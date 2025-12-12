@@ -13,6 +13,8 @@ export enum ConversationStatus {
   ARCHIVED = 'archived',
 }
 
+export type ConversationMode = 'standard' | 'reflexive';
+
 export class Conversation {
   private readonly id: string;
   private messages: Message[];
@@ -22,19 +24,29 @@ export class Conversation {
   private title?: string;
   private readonly metadata: Map<string, unknown>;
   private readonly maxMessages: number = 1000; // Domain rule: limit conversation size
+  private readonly mode: ConversationMode; // Mode: standard (with tools) or reflexive (only questions)
+  private readonly maxMessagesBeforeEnd: number; // For reflexive mode: limit before showing end message
+  private hasEnded: boolean = false; // For reflexive mode: marks if conversation has ended
 
-  private constructor(id: string, messages: Message[] = []) {
+  private constructor(
+    id: string,
+    messages: Message[] = [],
+    mode: ConversationMode = 'reflexive',
+    maxMessagesBeforeEnd: number = 13
+  ) {
     this.id = id;
     this.messages = [...messages]; // Defensive copy
     this.status = ConversationStatus.ACTIVE;
     this.createdAt = new Date();
     this.updatedAt = new Date();
     this.metadata = new Map();
+    this.mode = mode;
+    this.maxMessagesBeforeEnd = maxMessagesBeforeEnd;
   }
 
-  static create(id?: string): Conversation {
+  static create(id?: string, mode: ConversationMode = 'reflexive', maxMessagesBeforeEnd: number = 13): Conversation {
     const conversationId = id || randomUUID();
-    return new Conversation(conversationId);
+    return new Conversation(conversationId, [], mode, maxMessagesBeforeEnd);
   }
 
   static restore(
@@ -43,10 +55,14 @@ export class Conversation {
     status: ConversationStatus,
     createdAt: Date,
     updatedAt: Date,
-    title?: string
+    title?: string,
+    mode: ConversationMode = 'reflexive',
+    maxMessagesBeforeEnd: number = 13,
+    hasEnded: boolean = false
   ): Conversation {
-    const conversation = new Conversation(id, messages);
+    const conversation = new Conversation(id, messages, mode, maxMessagesBeforeEnd);
     conversation.status = status;
+    conversation.hasEnded = hasEnded;
     Object.assign(conversation, { createdAt, updatedAt, title });
     return conversation;
   }
@@ -77,6 +93,11 @@ export class Conversation {
         `Conversation has reached maximum message limit of ${this.maxMessages}`,
         this.id
       );
+    }
+
+    // Check if reflexive conversation has ended
+    if (this.mode === 'reflexive' && this.hasEnded) {
+      throw new ConversationError('Cannot add messages to ended reflexive conversation', this.id);
     }
 
     // Check if conversation is in a valid state
@@ -261,12 +282,67 @@ export class Conversation {
     return this.status === ConversationStatus.ARCHIVED;
   }
 
+  // Reflexive mode methods
+  getMode(): ConversationMode {
+    return this.mode;
+  }
+
+  isReflexiveMode(): boolean {
+    return this.mode === 'reflexive';
+  }
+
+  isStandardMode(): boolean {
+    return this.mode === 'standard';
+  }
+
+  getMaxMessagesBeforeEnd(): number {
+    return this.maxMessagesBeforeEnd;
+  }
+
+  hasReachedLimit(): boolean {
+    if (this.mode !== 'reflexive') return false;
+    return this.getUserMessageCount() >= this.maxMessagesBeforeEnd;
+  }
+
+  shouldShowEndMessage(): boolean {
+    if (this.mode !== 'reflexive') return false;
+    return this.getUserMessageCount() === this.maxMessagesBeforeEnd && !this.hasEnded;
+  }
+
+  end(): void {
+    if (this.mode !== 'reflexive') {
+      throw new ConversationError('Can only end reflexive conversations', this.id);
+    }
+    if (!this.hasReachedLimit()) {
+      throw new ConversationError(
+        `Cannot end conversation before reaching limit of ${this.maxMessagesBeforeEnd} messages`,
+        this.id
+      );
+    }
+    this.hasEnded = true;
+    this.status = ConversationStatus.COMPLETED;
+    this.updatedAt = new Date();
+  }
+
+  canContinue(): boolean {
+    if (this.mode !== 'reflexive') return true;
+    return !this.hasEnded && !this.hasReachedLimit();
+  }
+
+  getHasEnded(): boolean {
+    return this.hasEnded;
+  }
+
   toObject(): {
     id: string;
     messages: Array<any>;
     status: ConversationStatus;
     title?: string;
     messageCount: number;
+    userMessageCount: number;
+    mode: ConversationMode;
+    maxMessagesBeforeEnd: number;
+    hasEnded: boolean;
     createdAt: string;
     updatedAt: string;
   } {
@@ -276,6 +352,10 @@ export class Conversation {
       status: this.status,
       title: this.title,
       messageCount: this.messages.length,
+      userMessageCount: this.getUserMessageCount(),
+      mode: this.mode,
+      maxMessagesBeforeEnd: this.maxMessagesBeforeEnd,
+      hasEnded: this.hasEnded,
       createdAt: this.createdAt.toISOString(),
       updatedAt: this.updatedAt.toISOString(),
     };

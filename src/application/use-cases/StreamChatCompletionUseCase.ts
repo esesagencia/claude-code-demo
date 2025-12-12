@@ -1,30 +1,28 @@
-// ABOUTME: Orchestrates streaming chat completion with tool execution
-// ABOUTME: Pure business logic coordinating AI provider, tools, and streaming
+// ABOUTME: Orchestrates streaming chat completion with reflexive mode support
+// ABOUTME: Pure business logic coordinating AI provider and streaming (no tools in reflexive mode)
 
 import { Conversation } from '../../domain/entities/Conversation';
 import { Message } from '../../domain/entities/Message';
-import { ToolInvocation } from '../../domain/entities/ToolInvocation';
 import { StreamingResponse, TokenUsage } from '../../domain/entities/StreamingResponse';
 import { MessageRole } from '../../domain/value-objects/MessageRole';
 import { MessageContent } from '../../domain/value-objects/MessageContent';
-import { ToolName } from '../../domain/value-objects/ToolName';
 import { ConversationOrchestrator } from '../../domain/services/ConversationOrchestrator';
 import { IConversationRepository } from '../../domain/repositories/IConversationRepository';
-import { IAIProvider, AICompletionRequest, AIStreamChunk } from '../ports/outbound/IAIProvider';
-import { IToolRegistry } from '../ports/outbound/IToolRegistry';
+import { IAIProvider, AICompletionRequest } from '../ports/outbound/IAIProvider';
 import { IStreamAdapter, StreamData } from '../ports/outbound/IStreamAdapter';
-import { randomUUID } from 'crypto';
+import { ReflexivePromptService } from '../../infrastructure/adapters/ai/ReflexivePromptService';
 
 export class StreamChatCompletionUseCase {
   private readonly orchestrator: ConversationOrchestrator;
+  private readonly reflexivePromptService: ReflexivePromptService;
 
   constructor(
     private readonly aiProvider: IAIProvider,
-    private readonly toolRegistry: IToolRegistry,
     private readonly streamAdapter: IStreamAdapter,
     private readonly conversationRepository: IConversationRepository
   ) {
     this.orchestrator = new ConversationOrchestrator();
+    this.reflexivePromptService = new ReflexivePromptService();
   }
 
   async execute(
@@ -40,6 +38,11 @@ export class StreamChatCompletionUseCase {
         throw new Error('Conversation not found');
       }
 
+      // Check if conversation can continue
+      if (conversation.isReflexiveMode() && !conversation.canContinue()) {
+        throw new Error('Conversation has ended. Please start a new conversation.');
+      }
+
       // Prepare for streaming
       const context = this.orchestrator.prepareForStreaming(conversation);
       streamingResponse = context.streamingResponse;
@@ -48,18 +51,32 @@ export class StreamChatCompletionUseCase {
       }
       streamingResponse.start();
 
-      // Prepare AI request
-      const messages = [...conversation.getMessages()]; // Create mutable copy
-      const tools = this.toolRegistry.getAllDefinitions();
+      // Prepare AI request with reflexive prompt if needed
+      const messages = [...conversation.getMessages()];
+
+      // Determine system prompt based on conversation state
+      let systemPrompt: string | undefined;
+      let isClosingMessage = false;
+
+      if (conversation.isReflexiveMode()) {
+        if (conversation.shouldShowEndMessage()) {
+          // This is the 13th message - use the closing prompt
+          const conversationTopic = this.extractConversationTopic(messages);
+          systemPrompt = this.reflexivePromptService.getClosingPrompt(conversationTopic);
+          isClosingMessage = true;
+        } else {
+          // Normal reflexive prompt
+          systemPrompt = this.reflexivePromptService.getSystemPrompt();
+        }
+      }
 
       const request: AICompletionRequest = {
         messages,
-        tools,
         model: 'gpt-4o',
+        systemPrompt,
       };
 
       // Stream completion
-      const pendingToolCalls: ToolInvocation[] = [];
       let accumulatedText = '';
 
       for await (const chunk of this.aiProvider.streamCompletion(request)) {
@@ -72,33 +89,16 @@ export class StreamChatCompletionUseCase {
             }
             break;
 
-          case 'tool_call':
-            if (chunk.toolCall) {
-              const toolInvocation = this.createToolInvocation(chunk.toolCall);
-              pendingToolCalls.push(toolInvocation);
-              streamingResponse.addToolCallChunk(
-                chunk.toolCall.id,
-                chunk.toolCall.name,
-                chunk.toolCall.arguments
-              );
-              this.streamToolCall(toolInvocation, controller);
-            }
-            break;
-
           case 'usage':
             if (chunk.usage) {
-              // First, complete the streaming response if no tools
-              // This allows the assistant message to be added properly
-              if (pendingToolCalls.length === 0) {
-                streamingResponse.complete(chunk.usage, chunk.finishReason || 'stop');
-              }
+              // Complete the streaming response
+              streamingResponse.complete(chunk.usage, chunk.finishReason || 'stop');
 
-              // Create assistant message with tool invocations
+              // Create assistant message
               const assistantMessage = Message.create(
                 MessageRole.assistant(),
                 MessageContent.from(accumulatedText || ''),
-                [],
-                pendingToolCalls
+                []
               );
 
               // Add assistant message to conversation
@@ -108,24 +108,20 @@ export class StreamChatCompletionUseCase {
                 streamingResponse
               );
 
+              // If this is a closing message, end the conversation
+              if (isClosingMessage) {
+                conversation.end();
+              }
+
               // Save conversation with assistant message
               await this.conversationRepository.save(conversation);
 
-              // Execute tools if present
-              if (pendingToolCalls.length > 0) {
-                await this.executeToolsAndStream(
-                  pendingToolCalls,
-                  conversation,
-                  streamingResponse,
-                  controller
-                );
-
-                // Complete streaming response after tools are executed
-                streamingResponse.complete(chunk.usage, chunk.finishReason || 'stop');
+              // Stream finish event with special flag for closing message
+              if (isClosingMessage) {
+                this.streamClosingFinish(chunk.usage, controller);
+              } else {
+                this.streamFinish(chunk.usage, controller);
               }
-
-              // Stream finish event
-              this.streamFinish(chunk.usage, controller);
             }
             break;
 
@@ -147,41 +143,30 @@ export class StreamChatCompletionUseCase {
     }
   }
 
+  /**
+   * Extracts the main topic of conversation from the message history
+   * This is used to generate a contextual closing message
+   */
+  private extractConversationTopic(messages: Message[]): string | undefined {
+    // Get the first user message as it usually contains the main topic
+    const firstUserMessage = messages.find(
+      (msg) => msg.getRole().getValue() === 'user'
+    );
+
+    if (!firstUserMessage) {
+      return undefined;
+    }
+
+    const content = firstUserMessage.getContent().getValue();
+
+    // Return a summary (first 100 chars for context)
+    return content.substring(0, 150);
+  }
+
   private streamText(content: string, controller: ReadableStreamDefaultController): void {
     const data: StreamData = {
       type: 'text',
       payload: content,
-    };
-    this.streamAdapter.write(controller, data);
-  }
-
-  private streamToolCall(
-    toolInvocation: ToolInvocation,
-    controller: ReadableStreamDefaultController
-  ): void {
-    const data: StreamData = {
-      type: 'tool_call',
-      payload: {
-        toolCallId: toolInvocation.getCallId(),
-        toolName: toolInvocation.getToolName().getValue(),
-        args: toolInvocation.getArgs(),
-      },
-    };
-    this.streamAdapter.write(controller, data);
-  }
-
-  private streamToolResult(
-    toolInvocation: ToolInvocation,
-    controller: ReadableStreamDefaultController
-  ): void {
-    const data: StreamData = {
-      type: 'tool_result',
-      payload: {
-        toolCallId: toolInvocation.getCallId(),
-        toolName: toolInvocation.getToolName().getValue(),
-        args: toolInvocation.getArgs(),
-        result: toolInvocation.getResult(),
-      },
     };
     this.streamAdapter.write(controller, data);
   }
@@ -201,6 +186,25 @@ export class StreamChatCompletionUseCase {
     this.streamAdapter.write(controller, data);
   }
 
+  /**
+   * Streams finish event for closing message with special metadata
+   */
+  private streamClosingFinish(
+    usage: TokenUsage,
+    controller: ReadableStreamDefaultController
+  ): void {
+    const data: StreamData = {
+      type: 'finish',
+      payload: {
+        finishReason: 'reflexive_end',
+        usage,
+        isContinued: false,
+        isReflexiveEnd: true,
+      },
+    };
+    this.streamAdapter.write(controller, data);
+  }
+
   private streamError(
     error: Error,
     controller: ReadableStreamDefaultController
@@ -212,92 +216,5 @@ export class StreamChatCompletionUseCase {
       },
     };
     this.streamAdapter.write(controller, data);
-  }
-
-  private async executeToolsAndStream(
-    toolCalls: ToolInvocation[],
-    conversation: Conversation,
-    streamingResponse: StreamingResponse,
-    controller: ReadableStreamDefaultController
-  ): Promise<void> {
-    for (const toolCall of toolCalls) {
-      let toolCompleted = false;
-
-      try {
-        toolCall.markAsExecuting();
-
-        const result = await this.toolRegistry.execute(
-          toolCall.getToolName(),
-          toolCall.getArgs()
-        );
-
-        toolCall.complete(result);
-        toolCompleted = true;
-
-        streamingResponse.addToolResultChunk(
-          toolCall.getCallId(),
-          toolCall.getToolName().getValue(),
-          result
-        );
-
-        this.streamToolResult(toolCall, controller);
-
-        // Create tool result message and add to conversation
-        const toolMessage = Message.createToolMessage(
-          toolCall.getCallId(),
-          JSON.stringify(result)
-        );
-        conversation.addMessage(toolMessage);
-
-        // Save the conversation with the tool result
-        await this.conversationRepository.save(conversation);
-
-      } catch (error) {
-        // Only call fail if the tool hasn't been marked as completed
-        if (!toolCompleted && toolCall.isExecuting()) {
-          toolCall.fail(error as Error);
-        }
-        console.error(`Tool execution failed:`, error);
-
-        // Create error tool message
-        const errorResult = {
-          error: true,
-          message: `Tool execution failed: ${(error as Error).message}`,
-        };
-
-        const toolMessage = Message.createToolMessage(
-          toolCall.getCallId(),
-          JSON.stringify(errorResult)
-        );
-        conversation.addMessage(toolMessage);
-
-        // Save the conversation with the error result
-        await this.conversationRepository.save(conversation);
-
-        // Stream error information to client
-        const errorData: StreamData = {
-          type: 'tool_result',
-          payload: {
-            toolCallId: toolCall.getCallId(),
-            toolName: toolCall.getToolName().getValue(),
-            args: toolCall.getArgs(),
-            result: errorResult,
-          },
-        };
-        this.streamAdapter.write(controller, errorData);
-      }
-    }
-  }
-
-  private createToolInvocation(toolCall: {
-    id: string;
-    name: string;
-    arguments: Record<string, unknown>;
-  }): ToolInvocation {
-    return ToolInvocation.create(
-      toolCall.id,
-      ToolName.from(toolCall.name),
-      toolCall.arguments
-    );
   }
 }

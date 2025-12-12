@@ -17,38 +17,32 @@ export const Overview = () => {
         <p className="flex flex-row justify-center gap-4 items-center">
           <MessageIcon size={32} />
         </p>
-        <p>
-          This is an example of a Next.js application that demonstrates the usage of
-          the{" "}
-          <Link
-            className="font-medium underline underline-offset-4"
-            href="https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol"
-            target="_blank"
-          >
-            Data Stream Protocol
-          </Link>{" "}
-          to stream chat completions from a Next.js API route (
-          <Link
-            className="font-medium underline underline-offset-4"
-            href="https://nextjs.org"
-            target="_blank"
-          >
-            Next.js
-          </Link>
-          ) along with the
-          <code className="rounded-md bg-muted px-1 py-0.5">useChat</code> hook on the client to create a seamless chat experience.
-          on the client to create a seamless chat experience.
+        <h1 className="text-3xl font-semibold">CHATGPTÚ</h1>
+        <p className="text-lg text-muted-foreground">
+          Soy <span className="font-semibold">AVRQ SURGPT</span>, un asistente reflexivo diferente.
         </p>
         <p>
-          You can learn more about the AI SDK by visiting the{" "}
+          No voy a darte respuestas directas. No voy a resolver tus problemas.
+          En su lugar, voy a hacerte preguntas que te hagan pensar.
+        </p>
+        <p>
+          ¿Por qué? Porque cada vez más delegamos nuestro pensamiento crítico en las IAs.
+          Esperamos que nos digan qué hacer, cómo hacerlo, cuándo hacerlo.
+        </p>
+        <p className="font-medium">
+          Pero la mejor respuesta no viene de una máquina.
+          Viene de ti.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Un experimento de{" "}
           <Link
             className="font-medium underline underline-offset-4"
-            href="https://sdk.vercel.ai/docs"
+            href="https://somossur.es"
             target="_blank"
           >
-            docs
+            SomosSur
           </Link>
-          .
+          {" "}para recuperar tu pensamiento crítico.
         </p>
       </div>
     </motion.div>

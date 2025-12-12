@@ -1,22 +1,16 @@
-// ABOUTME: Dependency injection container for wiring up the hexagonal architecture
-// ABOUTME: Creates and manages all adapters, use cases, and services
+// ABOUTME: Dependency injection container for wiring up the hexagonal architecture (reflexive mode)
+// ABOUTME: Creates and manages all adapters, use cases, and services (no tools for reflexive mode)
 
 import { IAIProvider } from '../../application/ports/outbound/IAIProvider';
-import { IToolRegistry } from '../../application/ports/outbound/IToolRegistry';
 import { IStreamAdapter } from '../../application/ports/outbound/IStreamAdapter';
-import { IWeatherService } from '../../application/ports/outbound/IWeatherService';
 import { IConversationRepository } from '../../domain/repositories/IConversationRepository';
 
 import { StreamChatCompletionUseCase } from '../../application/use-cases/StreamChatCompletionUseCase';
 import { SendMessageUseCase } from '../../application/use-cases/SendMessageUseCase';
-import { ExecuteToolUseCase } from '../../application/use-cases/ExecuteToolUseCase';
 import { ManageConversationUseCase } from '../../application/use-cases/ManageConversationUseCase';
 
 import { OpenAIAdapter } from '../adapters/ai/OpenAIAdapter';
 import { VercelStreamAdapter } from '../adapters/streaming/VercelStreamAdapter';
-import { WeatherToolAdapter } from '../adapters/tools/WeatherToolAdapter';
-import { WeatherTool } from '../adapters/tools/WeatherTool';
-import { ToolRegistry } from '../adapters/tools/ToolRegistry';
 import { InMemoryConversationRepository } from '../repositories/InMemoryConversationRepository';
 import { MongoDBClient } from '../adapters/database/MongoDBClient';
 import { MongoDBConversationRepository } from '../adapters/database/MongoDBConversationRepository';
@@ -34,15 +28,12 @@ export class DependencyContainer {
 
   // Ports
   private aiProvider!: IAIProvider;
-  private toolRegistry!: IToolRegistry;
   private streamAdapter!: IStreamAdapter;
-  private weatherService!: IWeatherService;
   private conversationRepository!: IConversationRepository;
 
   // Use Cases
   private streamChatCompletionUseCase!: StreamChatCompletionUseCase;
   private sendMessageUseCase!: SendMessageUseCase;
-  private executeToolUseCase!: ExecuteToolUseCase;
   private manageConversationUseCase!: ManageConversationUseCase;
 
   private constructor(private config: ContainerConfig) {
@@ -94,18 +85,11 @@ export class DependencyContainer {
     // Initialize streaming adapter
     this.streamAdapter = new VercelStreamAdapter();
 
-    // Initialize weather service
-    this.weatherService = new WeatherToolAdapter();
-
     // Initialize repository with fallback strategy
     await this.initializeRepository();
 
-    // Initialize tool registry and register tools
-    this.toolRegistry = new ToolRegistry();
-    this.registerTools();
-
     if (this.config.enableLogging) {
-      console.log('Infrastructure adapters initialized');
+      console.log('Infrastructure adapters initialized (reflexive mode - no tools)');
     }
   }
 
@@ -146,27 +130,11 @@ export class DependencyContainer {
   }
 
   /**
-   * Registers available tools in the registry
-   */
-  private registerTools(): void {
-    // Register weather tool
-    const weatherTool = new WeatherTool(this.weatherService);
-    this.toolRegistry.register(weatherTool);
-
-    // Future: Register additional tools here
-
-    if (this.config.enableLogging) {
-      console.log(`Registered ${this.toolRegistry.count()} tools`);
-    }
-  }
-
-  /**
    * Initializes all use cases
    */
   private initializeUseCases(): void {
     this.streamChatCompletionUseCase = new StreamChatCompletionUseCase(
       this.aiProvider,
-      this.toolRegistry,
       this.streamAdapter,
       this.conversationRepository
     );
@@ -175,16 +143,12 @@ export class DependencyContainer {
       this.conversationRepository
     );
 
-    this.executeToolUseCase = new ExecuteToolUseCase(
-      this.toolRegistry
-    );
-
     this.manageConversationUseCase = new ManageConversationUseCase(
       this.conversationRepository
     );
 
     if (this.config.enableLogging) {
-      console.log('Use cases initialized');
+      console.log('Use cases initialized (reflexive mode)');
     }
   }
 
@@ -197,10 +161,6 @@ export class DependencyContainer {
     return this.sendMessageUseCase;
   }
 
-  getExecuteToolUseCase(): ExecuteToolUseCase {
-    return this.executeToolUseCase;
-  }
-
   getManageConversationUseCase(): ManageConversationUseCase {
     return this.manageConversationUseCase;
   }
@@ -210,16 +170,8 @@ export class DependencyContainer {
     return this.aiProvider;
   }
 
-  getToolRegistry(): IToolRegistry {
-    return this.toolRegistry;
-  }
-
   getStreamAdapter(): IStreamAdapter {
     return this.streamAdapter;
-  }
-
-  getWeatherService(): IWeatherService {
-    return this.weatherService;
   }
 
   getConversationRepository(): IConversationRepository {
@@ -227,15 +179,15 @@ export class DependencyContainer {
   }
 
   /**
-   * Health check for the container
+   * Health check for the container (reflexive mode)
    */
   async healthCheck(): Promise<{
     status: 'healthy' | 'unhealthy';
-    services: Record<string, boolean | number>;
+    services: Record<string, boolean | number | string>;
     errors: string[];
   }> {
     const errors: string[] = [];
-    const services: Record<string, boolean | number> = {};
+    const services: Record<string, boolean | number | string> = {};
 
     // Check AI provider
     try {
@@ -243,14 +195,6 @@ export class DependencyContainer {
     } catch (error) {
       services.aiProvider = false;
       errors.push(`AI Provider: ${(error as Error).message}`);
-    }
-
-    // Check weather service
-    try {
-      services.weatherService = await this.weatherService.isAvailable();
-    } catch (error) {
-      services.weatherService = false;
-      errors.push(`Weather Service: ${(error as Error).message}`);
     }
 
     // Check repository
@@ -263,9 +207,9 @@ export class DependencyContainer {
       errors.push(`Repository: ${(error as Error).message}`);
     }
 
-    // Check tool registry
-    services.toolRegistry = this.toolRegistry.count() > 0;
-    services.registeredTools = this.toolRegistry.count();
+    // Reflexive mode indicator
+    services.mode = 'reflexive';
+    services.toolsEnabled = false;
 
     const status = errors.length === 0 ? 'healthy' : 'unhealthy';
 
